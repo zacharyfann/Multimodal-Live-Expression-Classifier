@@ -8,6 +8,7 @@ from tensorflow.keras.applications.efficientnet_v2 import preprocess_input
 from tensorflow.keras import ops
 import time
 from scipy import stats
+from collections import defaultdict, deque
 
 # Dummy class weights (equal, since inference doesn't use them)
 class_weights_tensor = tf.constant([1.0] * 8, dtype=tf.float32)
@@ -386,13 +387,13 @@ def translate_outputs(expr_pred, va_pred, au_pred):
     # Optimal VA ranges for each emotion
     va_ranges = {
         "Neutral": {'v': [-0.2, 0.2], 'a': [-0.2, 0.2]},
-        "Anger": {'v': [-1.0, -0.3], 'a': [0.3, 1.0]},
-        "Disgust": {'v': [-1.0, -0.3], 'a': [-0.2, 0.6]},
+        "Anger": {'v': [-1.0, -0.4], 'a': [0.4, 1.0]},
+        "Disgust": {'v': [-1.0, -0.3], 'a': [-0.2, 0.7]},
         "Fear": {'v': [-1.0, -0.3], 'a': [0.3, 1.0]},
-        "Happy": {'v': [0.3, 1.0], 'a': [0.2, 1.0]},
-        "Sad": {'v': [-1.0, -0.3], 'a': [-1.0, 0.0]},
+        "Happy": {'v': [0.4, 1.0], 'a': [0.3, 1.0]},
+        "Sad": {'v': [-1.0, -0.5], 'a': [-1.0, -0.2]},
         "Surprise": {'v': [0.0, 0.6], 'a': [0.3, 1.0]},
-        "Other": {'v': [-0.5, 0.5], 'a': [-0.5, 0.5]}
+        "Other": {'v': [-0.35, 0.35], 'a': [-0.35, 0.35]}
     }
     
     dists = [np.sqrt((va_pred[0] - va_points[em][0])**2 + (va_pred[1] - va_points[em][1])**2) for em in emotions]
@@ -406,13 +407,13 @@ def translate_outputs(expr_pred, va_pred, au_pred):
     
     exp_v = np.exp(va_scores - np.max(va_scores))
     va_probs = exp_v / exp_v.sum()
-    
+    #0.25, 0.55, 0.2 alternative weights
     # Fusion weights (slightly increased for expr to leverage direct prediction)
-    w = [0.4, 0.4, 0.2]  # expr, au, va
+    w = [0.25, 0.65, 0.1]  # expr, au, va
     final_scores = w[0] * expr_probs + w[1] * au_probs + w[2] * va_probs
     
     # Add bias to prioritize Happy and Neutral
-    bias = np.array([0.15, 0.05, 0.0, -0.03, 0.14, -0.15, 0.0, 0.1])  # Boost for Neutral (0) and Happy (4)
+    bias = np.array([0.24, 0.185, 0.1, 0.05, 0.22, -0.03, 0.11, 0.12])  # Boost for Neutral (0) and Happy (4)
     final_scores += bias
     
     # Entropy check for adaptive adjustment
@@ -420,10 +421,10 @@ def translate_outputs(expr_pred, va_pred, au_pred):
     exp_temp = np.exp(temp_scores - np.max(temp_scores))
     temp_probs = exp_temp / exp_temp.sum()
     entropy = stats.entropy(temp_probs)
-    if entropy > 1.5:  # High uncertainty: boost AU/VA
-        w = [0.3, 0.35, 0.35]
+    if entropy > 1.75:  # High uncertainty: boost AU/VA
+        w = [0.2, 0.75, 0.15]
         final_scores = w[0] * expr_probs + w[1] * au_probs + w[2] * va_probs + bias
-        T = 1.0  # Soften
+        T = 1.1  # Soften
     else:
         T = 0.8  # Sharpen
     
@@ -439,9 +440,9 @@ def translate_outputs(expr_pred, va_pred, au_pred):
     valence, arousal = va_pred
     active_aus_count = len(O)
     mood = ""
-    if valence > 0.3:
+    if valence > 0.1:
         mood = "Positive "
-    elif valence < -0.3:
+    elif valence < -0.7:
         mood = "Negative "
     if arousal > 0.4 and active_aus_count > 3:
         mood += "Intense "
@@ -451,6 +452,14 @@ def translate_outputs(expr_pred, va_pred, au_pred):
 # Load YOLOv11 face model
 model_path = hf_hub_download(repo_id="AdamCodd/YOLOv11n-face-detection", filename="model.pt")
 yolo_model = YOLO(model_path)
+
+# Per-face history for self-ensemble (temporal averaging)
+histories = defaultdict(lambda: {
+    'expr': deque(maxlen=3),
+    'va': deque(maxlen=3),
+    'au': deque(maxlen=3),
+    'prev_label': None
+})
 
 # Webcam processing
 cap = cv2.VideoCapture(0)  # 0 for default webcam
@@ -463,50 +472,56 @@ while True:
         print("Failed to grab frame")
         break
 
-    # YOLO detection
+    # YOLO detection with tracking
     results = yolo_model.track(frame, persist=True, tracker="botsort.yaml")
 
     annotated_frame = frame.copy()
-    faces = []
-    boxes = []
+    face_data = []  # List of (id, x1, y1, x2, y2, preprocessed_crop)
     for r in results:
         for box in r.boxes:
-            if box.cls == 0:  # Face
+            if box.cls == 0 and box.id is not None:  # Face with track ID
+                face_id = int(box.id.item())  # Convert tensor to int
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
-                boxes.append((x1, y1, x2, y2))
                 crop = frame[y1:y2, x1:x2]
                 if crop.size > 0:
                     crop_resized = cv2.resize(crop, (224, 224))
                     crop_preprocessed = preprocess_input(crop_resized.astype(np.float32))
-                    faces.append(crop_preprocessed)
+                    face_data.append((face_id, x1, y1, x2, y2, crop_preprocessed))
 
-    if faces:
-        faces_batch = np.array(faces)
-        
-        # Ensemble predictions: average across models
-        all_expr = []
-        all_va = []
-        all_au = []
+    if face_data:
+        faces_batch = np.array([data[5] for data in face_data])
         try:
             preds = model.predict(faces_batch, verbose=0)
-            all_expr.append(preds['expr'])
-            all_va.append(preds['va'])
-            all_au.append(preds['au'])
+            expr_preds = preds['expr']
+            va_preds = preds['va']
+            au_preds = preds['au']
         except Exception as e:
             print(f"Error predicting with model on frame: {e}")
-            continue  # Skip this model for this frame
-        
-        if all_expr:  # Only if at least one model succeeded
-            expr_preds = np.mean(np.array(all_expr), axis=0)
-            va_preds = np.mean(np.array(all_va), axis=0)
-            au_preds = np.mean(np.array(all_au), axis=0)
-        else:
-            continue  # Skip frame if no predictions
+            continue
 
-        for i, (x1, y1, x2, y2) in enumerate(boxes):
-            label = translate_outputs(expr_preds[i], va_preds[i], au_preds[i])
+        for i, (face_id, x1, y1, x2, y2, _) in enumerate(face_data):
+            # Append new predictions to history
+            histories[face_id]['expr'].append(expr_preds[i])
+            histories[face_id]['va'].append(va_preds[i])
+            histories[face_id]['au'].append(au_preds[i])
+
+            # Compute averages (uses all available if <3)
+            avg_expr = np.mean(list(histories[face_id]['expr']), axis=0)
+            avg_va = np.mean(list(histories[face_id]['va']), axis=0)
+            avg_au = np.mean(list(histories[face_id]['au']), axis=0)
+
+            # Get new label from averaged preds
+            new_label = translate_outputs(avg_expr, avg_va, avg_au)
+
+            # Only change if different from previous
+            display_label = histories[face_id]['prev_label']
+            if display_label is None or new_label != display_label:
+                display_label = new_label
+                histories[face_id]['prev_label'] = new_label
+
+            # Draw box and label
             cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            cv2.putText(annotated_frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+            cv2.putText(annotated_frame, display_label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
 
     # Display
     cv2.imshow('Emotion Detection', annotated_frame)
