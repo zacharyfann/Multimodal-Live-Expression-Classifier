@@ -1,0 +1,11 @@
+numpy
+opencv-python
+tensorflow>=2.11
+ultralytics
+huggingface-hub
+scipy
+gdown
+matplotlib
+google-cloud-storage
+tqdm
+Pillow
