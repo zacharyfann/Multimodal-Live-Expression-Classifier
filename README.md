@@ -3,7 +3,7 @@
 Data Sources and Processing
 The dataset was sourced from Aff-Wild2 repository. I chose to store all the data using Google Cloud Storage (GCS), chosen over Google Drive due to storage limits. GCS enabled efficient access to 650k+ image annotations.
 
-Processing Steps:
+# Processing Steps:
 
 Used pickle for caching data pairs, allowing fast retrieval of large multimodal samples (Expr, VA, AU).
 Filtered incomplete annotations (-1 values), reducing to 178,997 valid examples (e.g., Neutral: 59,416; Disgust: 359; Fear: 162).
@@ -12,16 +12,9 @@ Split into five 20k subsets for ensemble training; applied class balancers (upsc
 Used the 4th subset for a balanced 10k validation set and the 5th as a 20k example test set ensuring no data leakage.
 
 
-
-From project logs:
-
-Cache1 validation: Expr F1 per class (e.g., Sad: 0.7002, Surprise: 0.2267).
-Cache2: Improved balance (e.g., Happy: 0.5880, Disgust: 0.5312).
-Cache3: Varied performance (e.g., Sad: 0.7327, Surprise: 0.3522).
-
-Architecture and Development Insights
+# Architecture and Development Insights
 Early experiments focused on an AU-specific model with feature branching (splitting face into eyes, mouth, nose for specialized learning), but it underperformed. Testing on random samples showed poor AU score alignment with ground-truth faces, leading to a pivot.
-Revelation and Pivot: Researched multi-modal modeling and ensembles. With three annotation types, adopted MTL to train on all simultaneously, boosting patterns (e.g., AUs like AU1/AU2 with Surprise; VA like (-0.64, 0.60) for Fear). Initially planned 5-model ensemble (bagging on subsets), but trained 3 models from scratch after overfitting issues with prior checkpoints (e.g., 64 epochs favoring "Other").
+Revelation and Pivot: Researched multi-modal modeling and ensembles. With three annotation types, adopted MTL to train on all simultaneously, boosting patterns (e.g., AUs like AU1/AU2 with Surprise; VA like (-0.64, 0.60) for Fear). Initially planned 5-model ensemble (bagging on subsets), but trained 3 models from scratch after overfitting issues with prior checkpoints (e.g., 64 epochs favoring "Sad").
 Model Architecture:
 
 Base: Transfer learning with EfficientNetV2S (ImageNet weights, unfroze 250 layers).
@@ -29,7 +22,7 @@ Fusion: Dropout + Multi-Head Attention for multimodal integration + Batch Normal
 Heads: Shared Dense layer + task-specific branches.
 Outputs: Expr (Softmax with kernel regularizers), VA (Tanh), AU (Sigmoid).
 
-Metrics and Monitoring:
+# Metrics and Monitoring:
 
 Expr/AU: Precision, Recall, F1 (per-class verbose outputs).
 VA: Concordance Correlation Coefficient (CCC), equivalent to F1 for continuous values.
@@ -38,13 +31,13 @@ Checkpoints saved per epoch for easy resuming.
 Learnings: Over-balanced minorities (e.g., reduced Sad boost from 2→1.5); incorporated external datasets for underrepresented classes (Anger, Disgust, Fear, Sad).
 
 From logs: Initial real-time tests (Epoch 49) favored "Other"/"Neutral"; post-training, better detection of "Happy"/"Surprise" at 4-5 FPS.
-Results
+
+# Results
 Evaluated on 20k test set:
 
 Expr Metrics (Macro Avg): Precision: 0.775, Recall: 0.798, F1: 0.781.
 
 Per-Class F1: Neutral: 0.882, Anger: 0.739, Disgust: 0.595, Fear: 0.607, Happy: 0.857, Sad: 0.936, Surprise: 0.718, Other: 0.916.
-
 
 AU F1: 0.795.
 VA CCC: 0.703.
@@ -52,7 +45,7 @@ Overall Accuracy: 0.872.
 
 Validation peaks (e.g., Cache2: Expr F1 ~0.534, VA CCC 0.69, AU F1 0.59) showed strong generalization.
 
-Installation
+# Installation
 
 Clone the repository:
 textgit clone https://github.com/yourusername/multimodal-emotion-classifier.git
@@ -66,7 +59,7 @@ or use the requirements.txt file
 Note: TensorFlow may require GPU setup (e.g., CUDA for NVIDIA). See TensorFlow docs for details.
 
 
-Download the model:
+# Download the model:
 
 Create a final_model directory.
 Download the .keras file (e.g., full_mtl_model.keras) from [Google Drive link] and place it in final_model/.
@@ -74,7 +67,7 @@ The YOLOv11 face model downloads automatically via Hugging Face Hub.
 
 
 
-Usage: How to Run the Code
+# Usage: How to Run the Code
 
 Ensure your webcam is connected (or use a video file by modifying cv2.VideoCapture(0) to cv2.VideoCapture('path/to/video.mp4')).
 Run the script:
@@ -86,23 +79,18 @@ Press 'q' to quit.
 FPS is printed every 10 frames (typically 2-4 FPS on standard hardware).
 
 
-Customization:
+# Customization:
 
 Adjust self-ensemble window in code (e.g., deque(maxlen=3) to 5 for more smoothing).
 For multi-model ensembles, load additional .keras files and average predictions.
 
 
-
-Contributing
-Pull requests welcome! For major changes, open an issue first. Ensure code follows PEP8 and includes tests.
-License
-MIT License. See LICENSE for details.
-Acknowledgments
+# Acknowledgments
 
 Inspired by research on MTL for emotion recognition (e.g., FACS for AUs, VA circumplex model).
 Tools: TensorFlow, Ultralytics YOLO, Hugging Face.
 
-References:
+# References:
 • D. Kollias, et. al.: "Advancements in Affective and Behavior Analysis: The 8th ABAW Workshop and
 Competition", 2025
 @article{Kollias2025, author = "Dimitrios Kollias and Panagiotis Tzirakis and Alan S. Cowen and Stefanos Zafeiriou and Irene
